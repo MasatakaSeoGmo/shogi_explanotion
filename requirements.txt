@@ -1,2 +1,5 @@
-cshogi
+# requirements.txt
+numpy<2
+cshogi==0.3.9
+requests
 openai
