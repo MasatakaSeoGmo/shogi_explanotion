@@ -94,55 +94,48 @@ def parse_kif(file_path: str):
     return parse_kif_from_text(kif_text)
 
 ########################################
-# 追加: LLMでコメントを生成する関数
+# LLMでコメントを生成する関数（事前推奨手を加味）
 ########################################
 def generate_llm_comment(
     move_number: int,
+    predicted_move: str,   # ★新規: 事前にエンジンが推奨していた手
     played_move: str,
     engine_best_move: str,
     next_best_line: str
 ) -> str:
     """
     OpenAIの新しいAPI(v1系)を用いてコメント文を生成する。
+    事前推奨手(predicted_move)を加え、指された手(played_move)との比較を促す。
     """
-    # 生成したいコメントの内容を一つの文字列にまとめる (例として将棋の解説用プロンプト)
     prompt_text = f"""
 【状況説明】
 - 手数: 第{move_number}手
-- 指された手: {played_move}
-- エンジン最善手: {engine_best_move}
+- 事前にエンジンが推奨していた手: {predicted_move}
+- 実際に指された手: {played_move}
+- この手の後、エンジン最善手: {engine_best_move}
 - エンジン読み筋: {next_best_line}
 
 【お願い】
 上記情報を踏まえ、将棋の文脈で分かりやすく解説コメントを書いてください。
-1. 指された手と最善手を比較し、どのような意味や違いがあるか説明する
+1. 「事前の推奨手」と「実際に指された手」を比較し、意味や狙い、違いについて説明する
 2. エンジンが読み上げている次の展開(最善手の読み筋)の内容・意図を解説する
 """
 
     try:
-        # ---------------------------------------------------
-        # 新しい ChatCompletion API の呼び出し
-        # ---------------------------------------------------
         response = client.chat.completions.create(
-            model="gpt-4o",  # モデル名はご利用の環境に合わせて変更
+            model="gpt-4o",  # 適宜モデルを変更
             messages=[
                 {
                     "role": "user",
                     "content": prompt_text,
                 }
             ],
-            max_tokens=300,    # 出力トークンの上限
-            temperature=0.7,   # 生成のランダム性
+            max_tokens=600,
+            temperature=0.7,
         )
-
-        # ---------------------------------------------------
-        # レスポンスから生成されたメッセージ本文を取得
-        # ---------------------------------------------------
         return response.choices[0].message.content.strip()
-
     except Exception as e:
         return f"LLMコメント生成中にエラーが発生しました: {e}"
-
 
 def main(kif_path: str, engine_path: str, move_time: int = 2000):
     moves = parse_kif(kif_path)
@@ -159,26 +152,34 @@ def main(kif_path: str, engine_path: str, move_time: int = 2000):
 
     for i, usi_move in enumerate(moves):
         move_number = i + 1
-        print(f"指し手 {move_number}: {usi_move}")
+
+        # ===========================================================
+        # (1) 事前にエンジンに問い合わせて推奨手を取得
+        # ===========================================================
+        engine.position(sfen=board.sfen())
+        result_before_push = engine.go(btime=move_time, wtime=move_time)
+        predicted_best_move = result_before_push[0]
+
+        print(f"指し手 {move_number} (KIF): {usi_move}")
+        print(f"  [事前評価] エンジン推奨手: {predicted_best_move}")
+
+        # ===========================================================
+        # (2) 実際の指し手を盤面に適用
+        # ===========================================================
         try:
             board.push_usi(usi_move)
         except ValueError as e:
             print(f"エラー: 指し手 {usi_move} の適用に失敗しました。 {e}")
             break
 
-        ################################################################
-        # エンジンに現在局面を設定して思考させる
-        ################################################################
+        # ===========================================================
+        # (3) 手を進めた後の局面を再評価 (事後評価)
+        # ===========================================================
         engine.position(sfen=board.sfen())
-        # goコマンドで思考 (シンプルに bestmove のみ取得)
-        result = engine.go(btime=move_time, wtime=move_time)
-        bestmove = result[0]
+        result_after_push = engine.go(btime=move_time, wtime=move_time)
+        bestmove = result_after_push[0]
 
-        ################################################################
-        # 追加: 次の先読み手順(読み筋)を文字列化 (簡易的にbestmoveをもう1手読ませる例)
-        ################################################################
-        # 実際にはmultiPVなどを使ってより深い読み筋を取得する方法もあるが、
-        # ここでは簡易サンプルとして bestmove を指した局面を1手だけ確認する。
+        # 簡易的な読み筋(もう1手)を取得
         next_board = cshogi.Board(board.sfen())
         try:
             next_board.push_usi(bestmove)
@@ -189,17 +190,19 @@ def main(kif_path: str, engine_path: str, move_time: int = 2000):
         except ValueError:
             next_best_line = f"{bestmove}"
 
-        print(f"  エンジン推奨手: {bestmove}")
+        print(f"  [事後評価] エンジン最善手: {bestmove}")
 
-        ################################################################
-        # 追加: LLMを用いてコメントを生成
-        ################################################################
+        # ===========================================================
+        # (4) LLMを用いて解説コメントを生成 (事前推奨手を含む)
+        # ===========================================================
         llm_comment = generate_llm_comment(
             move_number=move_number,
+            predicted_move=predicted_best_move,  # ★事前推奨手を渡す
             played_move=usi_move,
             engine_best_move=bestmove,
             next_best_line=next_best_line
         )
+
         print(f"  コメント:\n{llm_comment}\n")
 
     engine.quit()

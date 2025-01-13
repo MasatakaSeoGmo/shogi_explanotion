@@ -10,6 +10,8 @@ docker build -t myapp:latest .
 ```
 
 ## 2. Dockerコンテナの実行
+
+openAIのAPIkeyの情報をここで記述してください
 ```bash
 docker run --rm \
     --platform=linux/amd64 \
